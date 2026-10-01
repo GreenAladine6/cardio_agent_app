@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>API Gateway - Test WAV</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 40px; }
+    input, button { margin-top: 8px; display: block; }
+    pre { margin-top: 16px; padding: 12px; background: #f2f2f2; }
+  </style>
+</head>
+<body>
+  <h1>Upload test</h1>
+  <form id="upload-form">
+    <input id="file" name="file" type="file" accept=".wav,audio/wav">
+    <button id="submit" type="submit">Send WAV</button>
+  </form>
+  <pre id="result">No file sent yet.</pre>
+
+  <script>
+    const form = document.getElementById('upload-form');
+    const fileInput = document.getElementById('file');
+    const result = document.getElementById('result');
+    const submit = document.getElementById('submit');
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+
+      if (!fileInput.files.length) {
+        result.textContent = 'Select a .wav file first.';
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('file', fileInput.files[0]);
+
+      submit.disabled = true;
+      result.textContent = 'Sending...';
+
+      try {
+        const response = await fetch('/analyze_pcg', { method: 'POST', body: formData });
+        const payload = await response.json();
+        result.textContent = JSON.stringify(payload, null, 2);
+      } catch (error) {
+        result.textContent = 'Error: ' + error.message;
+      } finally {
+        submit.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
