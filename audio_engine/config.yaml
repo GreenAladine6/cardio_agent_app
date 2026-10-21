@@ -1,0 +1,52 @@
+project:
+  name: cardio-audio-engine
+  version: "0.1.0"
+  seed: 42
+  environment: local
+
+feature:
+  sample_rate: 2000
+  n_mfcc: 20
+  n_fft: 256
+  hop_length: 64
+  n_mels: 64
+  mel_fmin: 20
+  mel_fmax: 1000
+  window_seconds: 5.0
+  overlap_ratio: 0.5
+  min_duration_seconds: 1.0
+  max_duration_seconds: 120.0
+  bandpass:
+    low_hz: 25
+    high_hz: 400
+    order: 4
+  normalization: peak
+  energy_threshold_db: -45.0
+
+split:
+  train_fraction: 0.70
+  val_fraction: 0.15
+  test_fraction: 0.15
+  random_state: 42
+
+label:
+  normal: 0
+  pathological: 1
+  murmur: 1
+  extrahls: 1
+  extrasystole: 1
+  abnormal: 1
+  artifact: null
+
+paths:
+  data_root: "/content/data_raw"
+  fallback_drive_root: "/content/drive/MyDrive/cardio"
+  passthrough:
+    - "./data/raw"
+    - "./data/processed"
+
+notes:
+  dataset_urls: "Leave these URLs as placeholders or define them via environment variables; never commit raw data."
+  pascal_dataset_a: "https://example.invalid/pascal_a.zip"
+  pascal_dataset_b: "https://example.invalid/pascal_b.zip"
+  physionet_training_a: "https://example.invalid/physionet_training_a.zip"

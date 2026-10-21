@@ -1,0 +1,142 @@
+"""HTTP interface consumed directly by the AudioAgent."""
+
+from __future__ import annotations
+
+import base64
+import binascii
+import json
+import os
+from pathlib import Path
+from functools import lru_cache
+
+import numpy as np
+import onnxruntime as ort
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from pydantic import BaseModel, Field
+
+from .benchmark import run_benchmark
+from .pipeline import AudioPreprocessor, FeatureConfig
+
+
+MODEL_PATH = Path(os.getenv("ONNX_MODEL_PATH", "/models/pcg_classifier.onnx"))
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_AUDIO_BYTES", str(20 * 1024 * 1024)))
+preprocessor = AudioPreprocessor()
+
+app = FastAPI(
+    title="PCG Audio Engine",
+    description="PCG preprocessing, model benchmarking, and ONNX inference service for AudioAgent",
+    version="1.0.0",
+)
+
+
+class LabeledAudio(BaseModel):
+    label: str = Field(min_length=1, max_length=100)
+    audio_base64: str = Field(min_length=1)
+
+
+class BenchmarkRequest(BaseModel):
+    samples: list[LabeledAudio] = Field(min_length=8, max_length=256)
+
+
+@lru_cache(maxsize=1)
+def _load_model():
+    if not MODEL_PATH.is_file():
+        raise HTTPException(status_code=503, detail="No trained ONNX model is available yet")
+    try:
+        return ort.InferenceSession(str(MODEL_PATH), providers=["CPUExecutionProvider"])
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Could not load ONNX model: {exc}") from exc
+
+
+def _decode_upload(data: bytes):
+    if not data:
+        raise HTTPException(status_code=400, detail="Audio upload is empty")
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"Audio exceeds {MAX_UPLOAD_BYTES} bytes")
+    try:
+        return preprocessor.from_bytes(data)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+def _inference_result(features: np.ndarray):
+    session = _load_model()
+    input_meta = session.get_inputs()[0]
+    if input_meta.shape[-1] not in (None, "None", features.shape[0]):
+        raise HTTPException(status_code=503, detail="ONNX model feature width does not match the audio pipeline")
+    outputs = session.run(None, {input_meta.name: features.reshape(1, -1).astype(np.float32)})
+    prediction = int(np.asarray(outputs[0]).reshape(-1)[0])
+    labels = []
+    metadata_path = MODEL_PATH.with_suffix(MODEL_PATH.suffix + ".json")
+    if metadata_path.is_file():
+        try:
+            labels = json.loads(metadata_path.read_text(encoding="utf-8")).get("classes", [])
+        except (OSError, json.JSONDecodeError):
+            labels = []
+    label = labels[prediction] if 0 <= prediction < len(labels) else str(prediction)
+    result = {"label": label, "class_index": prediction}
+    if len(outputs) > 1:
+        probabilities = outputs[1]
+        if isinstance(probabilities, list) and probabilities and isinstance(probabilities[0], dict):
+            probabilities = probabilities[0]
+            result["probabilities"] = {
+                labels[int(index)] if int(index) < len(labels) else str(index): float(value)
+                for index, value in probabilities.items()
+            }
+        else:
+            values = np.asarray(probabilities).reshape(-1)
+            result["probabilities"] = {
+                labels[i] if i < len(labels) else str(i): float(value)
+                for i, value in enumerate(values)
+            }
+    return result
+
+
+@app.get("/health")
+def health():
+    return {
+        "status": "ok",
+        "service": "audio-engine",
+        "sample_rate": preprocessor.config.sample_rate,
+        "mfcc_count": preprocessor.config.n_mfcc,
+        "feature_count": preprocessor.feature_count,
+        "onnx_model_ready": MODEL_PATH.is_file(),
+    }
+
+
+@app.get("/v1/config")
+def pipeline_config():
+    return {**preprocessor.config.to_dict(), "feature_count": preprocessor.feature_count}
+
+
+@app.post("/v1/infer")
+async def infer(file: UploadFile = File(...)):
+    if file.content_type not in (None, "", "audio/wav", "audio/x-wav", "application/octet-stream"):
+        raise HTTPException(status_code=415, detail="Upload must be a WAV audio file")
+    data = await file.read(MAX_UPLOAD_BYTES + 1)
+    features = _decode_upload(data)
+    return {"prediction": _inference_result(features)}
+
+
+@app.post("/v1/benchmark")
+def benchmark(request: BenchmarkRequest):
+    features = []
+    labels = []
+    for index, sample in enumerate(request.samples):
+        try:
+            data = base64.b64decode(sample.audio_base64, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=f"Sample {index}: invalid base64 audio") from exc
+        features.append(_decode_upload(data))
+        labels.append(sample.label)
+    try:
+        report = run_benchmark(
+            np.stack(features), labels, model_path=MODEL_PATH,
+            experiment_name=os.getenv("MLFLOW_EXPERIMENT_NAME", "pcg-benchmark"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Benchmark failed: {exc}") from exc
+    _load_model.cache_clear()
+    return report

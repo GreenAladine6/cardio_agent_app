@@ -1,0 +1,6 @@
+{
+  "model_type": "Pipeline",
+  "feature_dim": 6,
+  "target_opset": 17,
+  "path": "audio_engine\\artifacts\\test_onnx.onnx"
+}
