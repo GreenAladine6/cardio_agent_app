@@ -11,7 +11,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
 from torch import nn
-from torchvision.models import resnet18 as build_resnet18
+from torchvision.models import ResNet18_Weights, resnet18 as build_resnet18
 
 
 def set_seed(seed: int = 42) -> None:
@@ -60,11 +60,21 @@ class PCGCNN(nn.Module):
 class PCGResNet18(nn.Module):
     """ResNet18 adapted for single-channel mel inputs."""
 
-    def __init__(self, n_classes: int = 2, in_channels: int = 1):
+    def __init__(self, n_classes: int = 2, in_channels: int = 1, *, pretrained: bool = False, freeze_backbone: bool = False):
         super().__init__()
-        model = build_resnet18(weights=None)
+        # Network access is opt-in: pretrained=True is an explicit training-time request.
+        model = build_resnet18(weights=ResNet18_Weights.DEFAULT if pretrained else None)
+        original_conv = model.conv1
         model.conv1 = nn.Conv2d(in_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        if pretrained and in_channels == 1:
+            with torch.no_grad():
+                model.conv1.weight.copy_(original_conv.weight.mean(dim=1, keepdim=True))
         model.fc = nn.Linear(model.fc.in_features, n_classes)
+        if freeze_backbone:
+            for parameter in model.parameters():
+                parameter.requires_grad = False
+            for parameter in model.fc.parameters():
+                parameter.requires_grad = True
         self.model = model
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -100,19 +110,19 @@ class TransformerCNNHybrid(nn.Module):
 def build_classical_1d_models() -> dict[str, Any]:
     """Create the mandatory 1D classical models used in the benchmark."""
     return {
-        "decision_tree": DecisionTreeClassifier(random_state=42, max_depth=6, min_samples_leaf=5),
+        "decision_tree": DecisionTreeClassifier(random_state=42, max_depth=6, min_samples_leaf=5, class_weight="balanced"),
         "rbf_svm": Pipeline([
             ("scaler", StandardScaler()),
-            ("svc", SVC(C=2.0, gamma="scale", kernel="rbf", probability=True, random_state=42)),
+            ("svc", SVC(C=2.0, gamma="scale", kernel="rbf", probability=True, class_weight="balanced", random_state=42)),
         ]),
     }
 
 
-def build_deep_2d_models() -> dict[str, nn.Module]:
+def build_deep_2d_models(*, pretrained_resnet: bool = False, freeze_backbone: bool = False) -> dict[str, nn.Module]:
     """Return the deep CNN-based architectures used for log-mel training."""
     return {
         "cnn": PCGCNN(in_channels=1, n_classes=2),
-        "resnet18": PCGResNet18(n_classes=2, in_channels=1),
+        "resnet18": PCGResNet18(n_classes=2, in_channels=1, pretrained=pretrained_resnet, freeze_backbone=freeze_backbone),
         "transformer_cnn": TransformerCNNHybrid(input_dim=64, seq_len=32, n_classes=2),
     }
 

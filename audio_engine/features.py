@@ -36,7 +36,16 @@ def load_feature_config(config_path: str | Path | None = None) -> dict[str, Any]
 
 
 def _as_f32(signal: np.ndarray) -> np.ndarray:
-    return np.asarray(signal, dtype=np.float32).reshape(-1)
+    values = np.asarray(signal, dtype=np.float32)
+    if values.ndim == 2:
+        if values.shape[1] < 1 or values.shape[1] > 8:
+            raise ValueError("Audio must have between one and eight channels")
+        values = values.mean(axis=1)
+    elif values.ndim != 1:
+        raise ValueError("Audio waveform must be mono or frames-by-channels")
+    if values.size == 0 or not np.isfinite(values).all():
+        raise ValueError("Audio must contain finite, non-empty samples")
+    return values
 
 
 def compute_feature_vector(signal: np.ndarray, *, sr: int = 2000, config: dict[str, Any] | None = None) -> np.ndarray:
@@ -48,7 +57,9 @@ def compute_feature_vector(signal: np.ndarray, *, sr: int = 2000, config: dict[s
     if sr <= 0:
         raise ValueError("Sampling rate must be positive")
 
-    audio = librosa.util.normalize(audio)
+    peak = float(np.max(np.abs(audio)))
+    if peak > 1e-8:
+        audio = audio / peak
     n_fft = int(cfg.get("n_fft", 256))
     hop = int(cfg.get("hop_length", 64))
     n_mfcc = int(cfg.get("n_mfcc", 20))
@@ -80,7 +91,10 @@ def compute_feature_vector(signal: np.ndarray, *, sr: int = 2000, config: dict[s
             np.array([audio.mean(), audio.std()], dtype=np.float32),
         ]
     )
-    return stats.astype(np.float32)
+    result = stats.astype(np.float32)
+    if not np.isfinite(result).all():
+        raise ValueError("Feature extraction produced non-finite values")
+    return result
 
 
 def compute_log_mel(signal: np.ndarray, *, sr: int = 2000, config: dict[str, Any] | None = None) -> np.ndarray:
@@ -99,4 +113,7 @@ def compute_log_mel(signal: np.ndarray, *, sr: int = 2000, config: dict[str, Any
         fmax=float(cfg.get("mel_fmax", 1000)),
     )
     log_mel = librosa.power_to_db(mel, ref=np.max)
-    return np.expand_dims(log_mel.astype(np.float32), axis=0)
+    result = np.expand_dims(log_mel.astype(np.float32), axis=0)
+    if not np.isfinite(result).all():
+        raise ValueError("Mel feature extraction produced non-finite values")
+    return result

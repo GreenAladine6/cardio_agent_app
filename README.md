@@ -14,7 +14,8 @@ The repository contains:
 ## Architecture
 
 ### API gateway
-The API gateway is a small FastAPI service that accepts uploaded WAV files and exposes a web/test entrypoint.
+The API gateway accepts WAV uploads and forwards them to the audio engine over
+the shared Docker Compose network.
 
 ### Audio engine
 The audio engine handles:
@@ -112,7 +113,7 @@ This starts the separate services defined in `docker-compose.yml`.
 
 ```bash
 cd audio_engine
-uvicorn serve:app --host 0.0.0.0 --port 8000
+uvicorn audio_engine.service:app --host 0.0.0.0 --port 8000
 ```
 
 ### Option 3: Run the gateway directly
@@ -133,7 +134,7 @@ curl http://localhost:8001/health
 ### Prediction endpoint
 
 ```bash
-curl -X POST "http://localhost:8001/predict" -F "file=@sample.wav"
+curl -X POST "http://localhost:8001/v1/infer" -F "file=@sample.wav"
 ```
 
 ### Gateway upload endpoint
@@ -159,7 +160,7 @@ The ONNX export and parity-check logic is implemented in `audio_engine/export_on
 Run the project test suite from the repository root:
 
 ```bash
-.venv\Scripts\python.exe -m pytest tests/test_audio.py -q
+python -m pytest -q
 ```
 
 This covers:

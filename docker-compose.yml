@@ -7,6 +7,10 @@ services:
     container_name: cardio-api-gateway
     ports:
       - "8000:8000"
+    environment:
+      AUDIO_ENGINE_URL: http://audio-engine:8000
+    depends_on:
+      - audio-engine
     restart: unless-stopped
 
   audio-engine:
@@ -20,6 +24,7 @@ services:
     environment:
       ONNX_MODEL_PATH: /models/pcg_classifier.onnx
       MLFLOW_TRACKING_URI: file:/mlruns
+      MAX_AUDIO_BYTES: 20971520
     volumes:
       - ./models:/models
       - ./mlruns:/mlruns

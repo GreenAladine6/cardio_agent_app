@@ -70,8 +70,11 @@ def select_best_model(results: list[dict[str, Any]], *, min_specificity: float =
     """Choose the best model by validation recall, subject to specificity constraint."""
     eligible = [result for result in results if result.get("val_specificity", 0.0) >= min_specificity]
     if not eligible:
-        return max(results, key=lambda item: item.get("val_recall", 0.0))
-    return max(eligible, key=lambda item: (item.get("val_recall", 0.0), item.get("val_f1", 0.0)))
+        raise ValueError(f"No validated candidate meets minimum specificity {min_specificity:.3f}")
+    return max(eligible, key=lambda item: (
+        item.get("val_recall", 0.0), item.get("val_f1", 0.0),
+        item.get("val_specificity", 0.0), item.get("algorithm", ""),
+    ))
 
 
 def _count_parameters(model: torch.nn.Module) -> int:
@@ -91,13 +94,10 @@ def _train_1d_model(name: str, X_train: np.ndarray, y_train: np.ndarray, X_val: 
     training_time = __import__("time").perf_counter() - start
     val_prob = model.predict_proba(X_val)[:, 1]
     val_metrics = _compute_metrics(y_val, val_prob)
-    test_prob = model.predict_proba(X_test)[:, 1]
-    test_metrics = _compute_metrics(y_test, test_prob)
     return {
         "algorithm": name,
         "model": model,
         "val_metrics": val_metrics,
-        "test_metrics": test_metrics,
         "training_time_s": training_time,
         "inference_ms_per_window": 0.0,
         "params": 0,
@@ -115,7 +115,11 @@ def _train_2d_model(name: str, X_train: np.ndarray, y_train: np.ndarray, X_val: 
     y_t = torch.tensor(y_train.astype(np.int64), device=device)
     start = __import__("time").perf_counter()
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
-    criterion = torch.nn.CrossEntropyLoss()
+    class_counts = np.bincount(y_train.astype(np.int64), minlength=2).astype(np.float32)
+    if np.any(class_counts == 0):
+        raise ValueError("Training split must contain both classes")
+    class_weights = class_counts.sum() / (2.0 * class_counts)
+    criterion = torch.nn.CrossEntropyLoss(weight=torch.tensor(class_weights, device=device))
     for _ in range(4):
         optimizer.zero_grad()
         logits = model(x_t)
@@ -126,14 +130,11 @@ def _train_2d_model(name: str, X_train: np.ndarray, y_train: np.ndarray, X_val: 
     model.eval()
     with torch.no_grad():
         val_prob = torch.softmax(model(torch.tensor(X_val.astype(np.float32), device=device).unsqueeze(1)), dim=1)[:, 1].cpu().numpy()
-        test_prob = torch.softmax(model(torch.tensor(X_test.astype(np.float32), device=device).unsqueeze(1)), dim=1)[:, 1].cpu().numpy()
     val_metrics = _compute_metrics(y_val, val_prob)
-    test_metrics = _compute_metrics(y_test, test_prob)
     return {
         "algorithm": name,
         "model": model,
         "val_metrics": val_metrics,
-        "test_metrics": test_metrics,
         "training_time_s": training_time,
         "inference_ms_per_window": 0.0,
         "params": _count_parameters(model),
@@ -149,11 +150,24 @@ def run_benchmark(
     X_test: np.ndarray,
     y_test: np.ndarray,
     *,
+    X_train_mel: np.ndarray | None = None,
+    X_val_mel: np.ndarray | None = None,
+    X_test_mel: np.ndarray | None = None,
     mlflow_uri: str | None = None,
     experiment_name: str = "cardio_audio_benchmark",
 ) -> dict[str, Any]:
     """Run the benchmark with the required 1D and 2D model families and return a summary dictionary."""
+    for split_name, labels in (("train", y_train), ("validation", y_val), ("test", y_test)):
+        values = set(np.asarray(labels).tolist())
+        if not values.issubset({0, 1}) or values != {0, 1}:
+            raise ValueError(f"{split_name} labels must contain both binary classes: 0 normal and 1 pathological")
     set_seed(42)
+    if any(value is None for value in (X_train_mel, X_val_mel, X_test_mel)):
+        raise ValueError("Provide separate train/validation/test log-Mel arrays for the CNN, ResNet18, and Transformer-CNN models")
+    mel_splits = (np.asarray(X_train_mel), np.asarray(X_val_mel), np.asarray(X_test_mel))
+    for name, values, labels in zip(("train", "validation", "test"), mel_splits, (y_train, y_val, y_test)):
+        if values.ndim != 3 or values.shape[0] != len(labels) or not np.isfinite(values).all():
+            raise ValueError(f"{name} log-Mel data must be finite (samples, mel_bins, frames) and align with labels")
     if mlflow_uri:
         mlflow.set_tracking_uri(mlflow_uri)
     results: list[dict[str, Any]] = []
@@ -164,13 +178,13 @@ def run_benchmark(
                 if algorithm in {"decision_tree", "rbf_svm"}:
                     record = _train_1d_model(algorithm, X_train, y_train, X_val, y_val, X_test, y_test)
                 else:
-                    record = _train_2d_model(algorithm, X_train, y_train, X_val, y_val, X_test, y_test)
+                    record = _train_2d_model(algorithm, X_train_mel, y_train, X_val_mel, y_val, X_test_mel, y_test)
                 mlflow.log_metrics({
                     "val_recall": record["val_metrics"]["recall"],
                     "val_specificity": record["val_metrics"]["specificity"],
+                    "val_precision": record["val_metrics"]["precision"],
                     "val_f1": record["val_metrics"]["f1"],
-                    "test_accuracy": record["test_metrics"]["accuracy"],
-                    "test_roc_auc": record["test_metrics"]["roc_auc"],
+                    "val_accuracy": record["val_metrics"]["accuracy"],
                 })
                 results.append(record)
         winner = select_best_model([
@@ -182,11 +196,25 @@ def run_benchmark(
             }
             for item in results
         ])
+        selected = next(item for item in results if item["algorithm"] == winner["algorithm"])
+        model = selected["model"]
+        if winner["algorithm"] in {"decision_tree", "rbf_svm"}:
+            test_probability = model.predict_proba(X_test)[:, 1]
+        else:
+            device = next(model.parameters()).device
+            model.eval()
+            with torch.no_grad():
+                test_probability = torch.softmax(
+                    model(torch.tensor(X_test_mel.astype(np.float32), device=device).unsqueeze(1)), dim=1
+                )[:, 1].cpu().numpy()
+        winner_test_metrics = _compute_metrics(y_test, test_probability)
         mlflow.log_param("winner_algorithm", winner["algorithm"])
         mlflow.log_metric("winner_val_recall", winner["val_recall"])
+        mlflow.log_metrics({f"winner_test_{key}": value for key, value in winner_test_metrics.items()})
     return {
         "winner": winner["algorithm"],
         "results": results,
+        "winner_test_metrics": winner_test_metrics,
         "parent_run_id": parent_run.info.run_id,
     }
 
@@ -199,6 +227,9 @@ def main() -> None:
     parser.add_argument("--val-labels", type=str, default="./data/val_labels.npy")
     parser.add_argument("--test-features", type=str, default="./data/test_features.npy")
     parser.add_argument("--test-labels", type=str, default="./data/test_labels.npy")
+    parser.add_argument("--train-mel", type=str, default="./data/train_mel.npy")
+    parser.add_argument("--val-mel", type=str, default="./data/val_mel.npy")
+    parser.add_argument("--test-mel", type=str, default="./data/test_mel.npy")
     parser.add_argument("--mlflow-uri", type=str, default=os.getenv("MLFLOW_TRACKING_URI", "file:./mlruns"))
     parser.add_argument("--experiment-name", type=str, default="cardio_audio_benchmark")
     args = parser.parse_args()
@@ -209,6 +240,9 @@ def main() -> None:
     y_val = np.load(args.val_labels)
     X_test = np.load(args.test_features)
     y_test = np.load(args.test_labels)
+    X_train_mel = np.load(args.train_mel)
+    X_val_mel = np.load(args.val_mel)
+    X_test_mel = np.load(args.test_mel)
 
     summary = run_benchmark(
         X_train,
@@ -217,6 +251,9 @@ def main() -> None:
         y_val,
         X_test,
         y_test,
+        X_train_mel=X_train_mel,
+        X_val_mel=X_val_mel,
+        X_test_mel=X_test_mel,
         mlflow_uri=args.mlflow_uri,
         experiment_name=args.experiment_name,
     )

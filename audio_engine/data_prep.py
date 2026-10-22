@@ -132,13 +132,21 @@ def segment_audio(
     audio = np.asarray(signal, dtype=np.float32).reshape(-1)
     if audio.size == 0:
         return []
+    if sample_rate <= 0 or window_seconds <= 0 or not 0 <= overlap < 1:
+        raise ValueError("Sample rate, window duration, or overlap is invalid")
+    if not np.isfinite(audio).all():
+        raise ValueError("Audio must contain finite samples")
     window_length = max(1, int(round(sample_rate * window_seconds)))
     hop_length = max(1, int(round(window_length * (1.0 - overlap))))
-    if pad and audio.size < window_length:
-        audio = np.pad(audio, (0, window_length - audio.size), mode="constant")
+
+    starts = list(range(0, max(1, audio.size - window_length + 1), hop_length))
+    if pad and starts[-1] + window_length < audio.size:
+        trailing_start = starts[-1] + hop_length
+        if trailing_start < audio.size:
+            starts.append(trailing_start)
 
     windows: list[np.ndarray] = []
-    for start in range(0, max(1, audio.size - window_length + 1), hop_length):
+    for start in starts:
         segment = audio[start : start + window_length]
         if segment.size < window_length:
             segment = np.pad(segment, (0, window_length - segment.size), mode="constant")

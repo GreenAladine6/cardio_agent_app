@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import logging
 import os
 from pathlib import Path
 from functools import lru_cache
@@ -14,13 +15,13 @@ import onnxruntime as ort
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from .benchmark import run_benchmark
-from .pipeline import AudioPreprocessor, FeatureConfig
+from .pipeline import AudioPreprocessor
 
 
 MODEL_PATH = Path(os.getenv("ONNX_MODEL_PATH", "/models/pcg_classifier.onnx"))
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_AUDIO_BYTES", str(20 * 1024 * 1024)))
 preprocessor = AudioPreprocessor()
+logger = logging.getLogger("audio_engine")
 
 app = FastAPI(
     title="PCG Audio Engine",
@@ -45,7 +46,8 @@ def _load_model():
     try:
         return ort.InferenceSession(str(MODEL_PATH), providers=["CPUExecutionProvider"])
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"Could not load ONNX model: {exc}") from exc
+        logger.exception("Configured ONNX model could not be loaded")
+        raise HTTPException(status_code=503, detail="Configured ONNX model is unavailable or invalid") from exc
 
 
 def _decode_upload(data: bytes):
@@ -60,21 +62,34 @@ def _decode_upload(data: bytes):
 
 
 def _inference_result(features: np.ndarray):
+    import time
+
+    started = time.perf_counter()
     session = _load_model()
     input_meta = session.get_inputs()[0]
-    if input_meta.shape[-1] not in (None, "None", features.shape[0]):
+    declared_width = input_meta.shape[-1]
+    if isinstance(declared_width, int) and declared_width != features.shape[0]:
         raise HTTPException(status_code=503, detail="ONNX model feature width does not match the audio pipeline")
+    if input_meta.type != "tensor(float)":
+        raise HTTPException(status_code=503, detail="ONNX model input must be float32")
     outputs = session.run(None, {input_meta.name: features.reshape(1, -1).astype(np.float32)})
     prediction = int(np.asarray(outputs[0]).reshape(-1)[0])
     labels = []
+    metadata = {}
     metadata_path = MODEL_PATH.with_suffix(MODEL_PATH.suffix + ".json")
     if metadata_path.is_file():
         try:
-            labels = json.loads(metadata_path.read_text(encoding="utf-8")).get("classes", [])
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            labels = metadata.get("classes", [])
         except (OSError, json.JSONDecodeError):
             labels = []
+            metadata = {}
     label = labels[prediction] if 0 <= prediction < len(labels) else str(prediction)
-    result = {"label": label, "class_index": prediction}
+    result = {
+        "label": label,
+        "class_index": prediction,
+        "model_version": metadata.get("model_version", "unknown"),
+    }
     if len(outputs) > 1:
         probabilities = outputs[1]
         if isinstance(probabilities, list) and probabilities and isinstance(probabilities[0], dict):
@@ -89,6 +104,7 @@ def _inference_result(features: np.ndarray):
                 labels[i] if i < len(labels) else str(i): float(value)
                 for i, value in enumerate(values)
             }
+    result["inference_ms"] = (time.perf_counter() - started) * 1000.0
     return result
 
 
@@ -111,8 +127,6 @@ def pipeline_config():
 
 @app.post("/v1/infer")
 async def infer(file: UploadFile = File(...)):
-    if file.content_type not in (None, "", "audio/wav", "audio/x-wav", "application/octet-stream"):
-        raise HTTPException(status_code=415, detail="Upload must be a WAV audio file")
     data = await file.read(MAX_UPLOAD_BYTES + 1)
     features = _decode_upload(data)
     return {"prediction": _inference_result(features)}
@@ -120,6 +134,9 @@ async def infer(file: UploadFile = File(...)):
 
 @app.post("/v1/benchmark")
 def benchmark(request: BenchmarkRequest):
+    # Keep sklearn/MLflow conversion dependencies out of the inference import path.
+    from .benchmark import run_benchmark
+
     features = []
     labels = []
     for index, sample in enumerate(request.samples):
@@ -137,6 +154,7 @@ def benchmark(request: BenchmarkRequest):
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Benchmark failed: {exc}") from exc
+        logger.exception("Audio benchmark failed")
+        raise HTTPException(status_code=500, detail="Benchmark failed; see service logs") from exc
     _load_model.cache_clear()
     return report
