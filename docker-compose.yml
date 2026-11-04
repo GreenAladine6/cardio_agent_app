@@ -1,4 +1,17 @@
 services:
+  mlflow:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.mlflow
+    image: cardio-mlflow:latest
+    container_name: cardio-mlflow
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./mlruns:/mlflow/artifacts
+      - ./mlflow:/mlflow
+    restart: unless-stopped
+
   api-gateway:
     build:
       context: ./api_getway
@@ -7,6 +20,9 @@ services:
     container_name: cardio-api-gateway
     ports:
       - "8000:8000"
+    environment:
+      AUDIO_ENGINE_URL: http://audio-engine:8000
+      AUDIO_ENGINE_INFER_PATH: /v1/infer
     restart: unless-stopped
 
   audio-engine:
@@ -19,8 +35,10 @@ services:
       - "8001:8000"
     environment:
       ONNX_MODEL_PATH: /models/pcg_classifier.onnx
-      MLFLOW_TRACKING_URI: file:/mlruns
+      MLFLOW_TRACKING_URI: http://mlflow:5000
     volumes:
       - ./models:/models
       - ./mlruns:/mlruns
+    depends_on:
+      - mlflow
     restart: unless-stopped

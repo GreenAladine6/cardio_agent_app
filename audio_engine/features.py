@@ -49,6 +49,13 @@ def compute_feature_vector(signal: np.ndarray, *, sr: int = 2000, config: dict[s
         raise ValueError("Sampling rate must be positive")
 
     audio = librosa.util.normalize(audio)
+    target_seconds = float(cfg.get("target_seconds", 8.0))
+    target_length = int(sr * target_seconds)
+    if audio.size < target_length:
+        audio = np.pad(audio, (0, target_length - audio.size))
+    else:
+        audio = audio[:target_length]
+
     n_fft = int(cfg.get("n_fft", 256))
     hop = int(cfg.get("hop_length", 64))
     n_mfcc = int(cfg.get("n_mfcc", 20))

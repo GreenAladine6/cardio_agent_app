@@ -15,6 +15,7 @@ The repository contains:
 
 ### API gateway
 The API gateway is a small FastAPI service that accepts uploaded WAV files and exposes a web/test entrypoint.
+It forwards valid uploads to the audio engine inference endpoint and returns the engine response.
 
 ### Audio engine
 The audio engine handles:
@@ -108,6 +109,18 @@ docker compose up --build
 
 This starts the separate services defined in `docker-compose.yml`.
 
+It also starts an MLflow tracking server at `http://localhost:5000`.
+
+Gateway forwarding is controlled by:
+
+- `AUDIO_ENGINE_URL` (default local: `http://localhost:8001`, docker-compose: `http://audio-engine:8000`)
+- `AUDIO_ENGINE_INFER_PATH` (default: `/v1/infer`)
+
+MLflow tracking is controlled by:
+
+- `MLFLOW_TRACKING_URI` (docker-compose default: `http://mlflow:5000` inside containers)
+- Host UI URL: `http://localhost:5000`
+
 ### Option 2: Run the audio engine directly
 
 ```bash
@@ -151,6 +164,9 @@ The project’s intended workflow is:
 3. Train or benchmark models
 4. Export the selected model to ONNX
 5. Load the ONNX model in the prediction service
+
+When you call `POST /v1/benchmark` on the audio engine, benchmark runs and metrics are logged to MLflow.
+Open the MLflow UI at `http://localhost:5000` to inspect experiments, runs, metrics, and artifacts.
 
 The ONNX export and parity-check logic is implemented in `audio_engine/export_onnx.py`.
 
