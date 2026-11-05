@@ -30,7 +30,7 @@ def push_runs_to_server(*, tracking_uri: str, model_path: str | Path | None = No
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Push benchmark metrics and model artifacts to the configured MLflow server")
-    parser.add_argument("--tracking-uri", default=os.getenv("MLFLOW_TRACKING_URI", "http://mlflow-server:5000"))
+    parser.add_argument("--tracking-uri", default=os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000"))
     parser.add_argument("--model-path", default="./audio_engine/artifacts/cardio_model.onnx")
     parser.add_argument("--metrics-path", default="./benchmark_summary.json")
     args = parser.parse_args()

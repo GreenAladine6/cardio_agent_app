@@ -8,6 +8,8 @@ import soundfile as sf
 
 from audio_engine.audio_engine.pipeline import AudioPreprocessor, FeatureConfig
 
+pytestmark = pytest.mark.unit
+
 
 def wav_bytes(signal: np.ndarray, sample_rate: int) -> bytes:
     buffer = io.BytesIO()
@@ -45,4 +47,3 @@ def test_silent_recording_is_finite_and_short_window_is_padded():
     features = pipeline.from_signal(np.zeros(200, dtype=np.float32), 2000)
     assert features.shape == (40,)
     assert np.isfinite(features).all()
-

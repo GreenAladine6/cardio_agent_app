@@ -37,7 +37,7 @@ Compose variables:
 |---|---|---|
 | `ONNX_MODEL_PATH` | `/models/pcg_classifier.onnx` | ONNX candidate loaded for inference |
 | `MAX_AUDIO_BYTES` | `20971520` | Upload size limit (20 MiB) |
-| `MLFLOW_TRACKING_URI` | `file:/mlruns` | MLflow tracking backend |
+| `MLFLOW_TRACKING_URI` | `file:/mlruns` | MLflow tracking backend; Compose points to `http://mlflow:5000` |
 | `MLFLOW_EXPERIMENT_NAME` | `pcg-benchmark` | Online benchmark experiment |
 | `AUDIO_ENGINE_URL` | `http://audio-engine:8000` in Compose | Gateway's internal service URL |
 
@@ -123,8 +123,10 @@ multiple examples of at least two classes.
 
 ## Docker, tests, and verified status
 
-Compose uses Docker service DNS (`audio-engine`) and the default shared network.
-Model files and MLflow's local store are mounted at `/models` and `/mlruns`.
+Compose uses Docker service DNS (`audio-engine`, `mlflow`) and the default
+shared network. Model files are mounted at `/models`. MLflow metadata and
+artifacts are stored in the separate `mlflow-data` and `mlflow-artifacts`
+Docker volumes and are served through the tracking server.
 The checked-in `artifacts/test_onnx.onnx` is a six-input test fixture, not a
 production model, and is not mounted as the Compose model. Consequently a
 fresh deployment correctly returns 503 from inference until a compatible

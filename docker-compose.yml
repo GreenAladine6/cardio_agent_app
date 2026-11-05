@@ -1,15 +1,15 @@
 services:
   mlflow:
     build:
-      context: .
-      dockerfile: docker/Dockerfile.mlflow
+      context: ./mlflow_service
+      dockerfile: Dockerfile
     image: cardio-mlflow:latest
     container_name: cardio-mlflow
     ports:
       - "5000:5000"
     volumes:
-      - ./mlruns:/mlflow/artifacts
-      - ./mlflow:/mlflow
+      - mlflow-data:/mlflow/data
+      - mlflow-artifacts:/mlflow/artifacts
     restart: unless-stopped
 
   api-gateway:
@@ -38,7 +38,11 @@ services:
       MLFLOW_TRACKING_URI: http://mlflow:5000
     volumes:
       - ./models:/models
-      - ./mlruns:/mlruns
     depends_on:
-      - mlflow
+      mlflow:
+        condition: service_healthy
     restart: unless-stopped
+
+volumes:
+  mlflow-data:
+  mlflow-artifacts:

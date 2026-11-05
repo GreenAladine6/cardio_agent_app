@@ -8,6 +8,7 @@ The repository contains:
 
 - `api_getway`: lightweight FastAPI gateway that receives uploads and routes requests
 - `audio_engine`: audio preprocessing, feature extraction, model training, export, and inference service
+- `mlflow_service`: standalone MLflow tracking server and container image
 - `docker-compose.yml`: service orchestration for local multi-container setup
 - `tests`: validation checks for the audio preprocessing and service behavior
 
@@ -53,6 +54,10 @@ cardio_app/
 │   ├── train_benchmark.py
 │   └── requirements-runtime.txt
 ├── docker/
+├── mlflow_service/
+│   ├── Dockerfile
+│   ├── README.md
+│   └── requirements.txt
 ├── docker-compose.yml
 ├── tests/
 ├── .gitignore
@@ -110,6 +115,11 @@ docker compose up --build
 This starts the separate services defined in `docker-compose.yml`.
 
 It also starts an MLflow tracking server at `http://localhost:5000`.
+The server is built from `mlflow_service/`, stores its SQLite metadata and
+artifacts in separate Docker-managed volumes, and exposes `/health` for
+readiness checks. Compose waits for MLflow to become healthy before starting
+the audio engine. Data persists across container recreation; `docker compose
+down -v` removes the MLflow volumes and their data.
 
 Gateway forwarding is controlled by:
 
@@ -172,19 +182,36 @@ The ONNX export and parity-check logic is implemented in `audio_engine/export_on
 
 ## Testing
 
-Run the project test suite from the repository root:
+Install the audio-engine development dependencies and API gateway dependencies
+from the repository root:
 
 ```bash
-python -m pytest -q
+python -m pip install -e "audio_engine[dev]"
+python -m pip install -r api_getway/app/requirements.txt
+```
+
+Run the unit and API integration tests with a coverage report:
+
+```bash
+python -m pytest -m "unit or integration"
 ```
 
 This covers:
 
-- audio preprocessing
-- feature extraction
+- audio preprocessing and feature extraction
 - grouped split logic
 - ONNX export parity checks
-- service health and validation behavior
+- audio-engine health and validation behavior
+- API gateway upload validation, forwarding, and upstream error handling
+
+Pytest prints a missing-lines coverage summary and writes the Cobertura report to
+`coverage.xml`. GitHub Actions runs these tests on pushes and pull requests and
+stores the JUnit and coverage reports as workflow artifacts.
+
+There is currently no LLM integration in the project. The separate LLM
+conformance job is therefore disabled by default. After adding LLM integration
+and tests marked `llm_conformance`, enable the repository Actions variable
+`LLM_CONFORMANCE_ENABLED` with the value `true` to run that suite.
 
 ## Notes
 
