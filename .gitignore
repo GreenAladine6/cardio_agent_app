@@ -6,5 +6,6 @@ __pycache__/
 coverage.xml
 junit.xml
 venv/
+api_getway/apigetwayenv/
 /models/adapters/
 /models/gguf/

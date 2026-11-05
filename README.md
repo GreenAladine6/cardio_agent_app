@@ -8,6 +8,8 @@ The repository contains:
 
 - `api_getway`: lightweight FastAPI gateway that receives uploads and routes requests
 - `audio_engine`: audio preprocessing, feature extraction, model training, export, and inference service
+- `rag_engine`: Qdrant-backed vector retrieval utilities and embedding helper
+- `agent-orchestrator`: three-agent orchestration with Pydantic guardrails
 - `mlflow_service`: standalone MLflow tracking server and container image
 - `docker-compose.yml`: service orchestration for local multi-container setup
 - `tests`: validation checks for the audio preprocessing and service behavior
@@ -150,6 +152,18 @@ MLflow tracking is controlled by:
 - `MLFLOW_TRACKING_URI` (docker-compose default: `http://mlflow:5000` inside containers)
 - Host UI URL: `http://localhost:5000`
 
+Qdrant vector storage is available at:
+
+- REST: `http://localhost:6333`
+- gRPC: `localhost:6334`
+
+Start only Qdrant if needed:
+
+```bash
+docker compose up -d qdrant
+curl http://localhost:6333/healthz
+```
+
 ### Option 2: Run the audio engine directly
 
 ```bash
@@ -183,6 +197,11 @@ curl -X POST "http://localhost:8001/v1/infer" -F "file=@sample.wav"
 ```bash
 curl -X POST "http://localhost:8000/analyze_pcg" -F "file=@sample.wav"
 ```
+
+## RAG and Guardrails docs
+
+- Qdrant vector storage and retrieval: [`rag_engine/README.md`](./rag_engine/README.md)
+- Agent orchestration and Pydantic guardrails: [`agent-orchestrator/README.md`](./agent-orchestrator/README.md)
 
 ## Model workflow
 

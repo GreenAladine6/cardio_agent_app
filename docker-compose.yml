@@ -86,7 +86,18 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: cardio-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    restart: unless-stopped
+
 volumes:
   mlflow-data:
   mlflow-artifacts:
   ollama-data:
+  qdrant-data:
