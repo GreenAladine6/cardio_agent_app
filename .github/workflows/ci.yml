@@ -24,12 +24,14 @@ jobs:
           cache-dependency-path: |
             audio_engine/pyproject.toml
             api_getway/app/requirements.txt
+            llm_finetuning/requirements-inference.txt
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e "audio_engine[dev]"
           python -m pip install -r api_getway/app/requirements.txt
+          python -m pip install -r llm_finetuning/requirements-inference.txt
 
       - name: Run unit and API integration tests with coverage
         run: python -m pytest -m "unit or integration" --junitxml=junit.xml
@@ -61,12 +63,14 @@ jobs:
           cache-dependency-path: |
             audio_engine/pyproject.toml
             api_getway/app/requirements.txt
+            llm_finetuning/requirements-inference.txt
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e "audio_engine[dev]"
           python -m pip install -r api_getway/app/requirements.txt
+          python -m pip install -r llm_finetuning/requirements-inference.txt
 
       - name: Run LLM conformance tests
         run: python -m pytest -m llm_conformance

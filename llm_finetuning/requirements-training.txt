@@ -1,0 +1,11 @@
+# Install a PyTorch wheel matching the host CUDA runtime before this file if
+# the default PyPI wheel does not match your driver.
+torch>=2.4,<2.6
+transformers>=4.46,<4.51
+trl==0.15.2
+peft>=0.14,<0.16
+bitsandbytes>=0.45,<0.47
+accelerate>=1.1,<2
+datasets>=3,<4
+matplotlib>=3.8,<4
+mlflow==2.18.0

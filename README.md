@@ -114,12 +114,27 @@ docker compose up --build
 
 This starts the separate services defined in `docker-compose.yml`.
 
+The Compose stack also starts the LLM inference API at
+`http://localhost:8002`, backed by Ollama on `http://localhost:11434`.
+Ollama's model data persists in the `ollama-data` volume. The exported GGUF
+directory is mounted read-only at `/models`; the stack does not download or
+import a model automatically.
+
+After exporting a GGUF and its `Modelfile` into `models/gguf/`, import it with:
+
+```bash
+docker compose exec ollama ollama create cardio-llm -f /models/Modelfile
+```
+
+The inference API's `/health` endpoint stays unavailable until `cardio-llm` is
+present in Ollama. Chat requests use `POST /v1/chat`.
+
 It also starts an MLflow tracking server at `http://localhost:5000`.
 The server is built from `mlflow_service/`, stores its SQLite metadata and
 artifacts in separate Docker-managed volumes, and exposes `/health` for
 readiness checks. Compose waits for MLflow to become healthy before starting
 the audio engine. Data persists across container recreation; `docker compose
-down -v` removes the MLflow volumes and their data.
+down -v` removes the MLflow and Ollama volumes and their data.
 
 Gateway forwarding is controlled by:
 
@@ -208,10 +223,10 @@ Pytest prints a missing-lines coverage summary and writes the Cobertura report t
 `coverage.xml`. GitHub Actions runs these tests on pushes and pull requests and
 stores the JUnit and coverage reports as workflow artifacts.
 
-There is currently no LLM integration in the project. The separate LLM
-conformance job is therefore disabled by default. After adding LLM integration
-and tests marked `llm_conformance`, enable the repository Actions variable
-`LLM_CONFORMANCE_ENABLED` with the value `true` to run that suite.
+The LLM inference API and Ollama integration are available through Compose.
+The separate LLM conformance job remains disabled by default; enable the
+repository Actions variable `LLM_CONFORMANCE_ENABLED` with the value `true`
+to run tests marked `llm_conformance`.
 
 ## Notes
 
