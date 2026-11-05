@@ -124,6 +124,23 @@ def test_api_handles_wrong_input_and_non_wav(tmp_path):
 
 
 @pytest.mark.integration
+def test_root_serves_frontend_index(tmp_path, monkeypatch):
+    from audio_engine.audio_engine import service
+
+    frontend_dir = tmp_path / "frontend"
+    frontend_dir.mkdir()
+    index = frontend_dir / "index.html"
+    index.write_text("<html>Cardio dashboard</html>", encoding="utf-8")
+    monkeypatch.setattr(service, "FRONTEND_DIR", frontend_dir)
+
+    client = TestClient(app)
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert response.text == "<html>Cardio dashboard</html>"
+
+
+@pytest.mark.integration
 def test_health_endpoint():
     client = TestClient(app)
     response = client.get("/health")

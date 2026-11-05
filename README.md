@@ -114,6 +114,10 @@ docker compose up --build
 
 This starts the separate services defined in `docker-compose.yml`.
 
+The Cardio dashboard is served at both `http://localhost:8000/` (API gateway)
+and `http://localhost:8001/` (audio engine); each service image includes
+`frontend/index.html`.
+
 The Compose stack also starts the LLM inference API at
 `http://localhost:8002`, backed by Ollama on `http://localhost:11434`.
 Ollama's model data persists in the `ollama-data` volume. The exported GGUF

@@ -9,7 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY requirements.txt ./requirements.txt
+COPY audio_engine/requirements.txt ./requirements.txt
 # Docker caches this requirements layer after a successful install. Long
 # timeouts/retries help with large scientific wheels on slow package mirrors.
 RUN for i in 1 2 3 4 5; do \
@@ -18,7 +18,8 @@ RUN for i in 1 2 3 4 5; do \
       echo "pip install failed (attempt $i), retrying..."; sleep 5; \
     done; exit 1
 
-COPY audio_engine ./audio_engine
+COPY audio_engine/audio_engine ./audio_engine
+COPY frontend/ /frontend/
 
 RUN mkdir -p /models /mlruns
 

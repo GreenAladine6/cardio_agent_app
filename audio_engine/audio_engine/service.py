@@ -15,11 +15,13 @@ import onnxruntime as ort
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from fastapi.responses import FileResponse
 
 from .pipeline import AudioPreprocessor
 
 
 MODEL_PATH = Path(os.getenv("ONNX_MODEL_PATH", "/models/pcg_classifier.onnx"))
+FRONTEND_DIR = Path(os.getenv("FRONTEND_DIR", "/frontend"))
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_AUDIO_BYTES", str(20 * 1024 * 1024)))
 preprocessor = AudioPreprocessor()
 logger = logging.getLogger("audio_engine")
@@ -163,6 +165,11 @@ def health():
         "feature_count": preprocessor.feature_count,
         "onnx_model_ready": MODEL_PATH.is_file(),
     }
+
+
+@app.get("/", include_in_schema=False)
+def root():
+    return FileResponse(FRONTEND_DIR / "index.html")
 
 
 @app.get("/v1/config")
