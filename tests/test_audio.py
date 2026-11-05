@@ -11,7 +11,8 @@ from fastapi.testclient import TestClient
 from audio_engine.data_prep import harmonize_labels, make_grouped_split, segment_audio, resample_audio
 from audio_engine.features import compute_feature_vector, compute_log_mel
 from audio_engine.export_onnx import export_sklearn_to_onnx, parity_check_onnx
-from audio_engine.serve import app
+from audio_engine.audio_engine.pipeline import AudioPreprocessor
+from audio_engine.audio_engine.service import app
 
 
 @pytest.fixture
@@ -61,6 +62,17 @@ def test_feature_shapes(synthetic_wave):
     assert mel.shape[1] in {64}
 
 
+def test_service_preprocessor_matches_training_features(synthetic_wave):
+    signal, sr = synthetic_wave
+    preprocessor = AudioPreprocessor()
+    service_vector = preprocessor.from_signal(signal, sr)
+    training_vector = compute_feature_vector(signal, sr=sr)
+
+    assert preprocessor.feature_count == training_vector.shape[0]
+    assert service_vector.shape == training_vector.shape
+    assert np.allclose(service_vector, training_vector, rtol=1e-5, atol=1e-5)
+
+
 def test_group_split_no_leakage():
     df = pd.DataFrame(
         {
@@ -97,11 +109,11 @@ def test_onnx_export_and_parity(tmp_path):
 
 def test_api_handles_wrong_input_and_non_wav(tmp_path):
     client = TestClient(app)
-    response = client.post("/predict", files={"file": ("bad.txt", b"not-wav", "text/plain")})
-    assert response.status_code == 400
+    response = client.post("/v1/infer", files={"file": ("bad.txt", b"not-wav", "text/plain")})
+    assert response.status_code in {415, 422}
 
-    response = client.post("/predict", files={"file": ("short.wav", b"RIFF...", "audio/wav")})
-    assert response.status_code in {400, 422}
+    response = client.post("/v1/infer", files={"file": ("short.wav", b"RIFF...", "audio/wav")})
+    assert response.status_code in {422, 503}
 
 
 def test_health_endpoint():
@@ -110,3 +122,4 @@ def test_health_endpoint():
     assert response.status_code == 200
     data = response.json()
     assert "status" in data
+    assert "onnx_model_ready" in data

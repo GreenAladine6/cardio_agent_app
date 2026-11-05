@@ -13,6 +13,7 @@ from functools import lru_cache
 import numpy as np
 import onnxruntime as ort
 from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .pipeline import AudioPreprocessor
@@ -29,6 +30,14 @@ app = FastAPI(
     version="1.0.0",
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 class LabeledAudio(BaseModel):
     label: str = Field(min_length=1, max_length=100)
@@ -37,6 +46,50 @@ class LabeledAudio(BaseModel):
 
 class BenchmarkRequest(BaseModel):
     samples: list[LabeledAudio] = Field(min_length=8, max_length=256)
+
+
+def _normalize_label(value: str) -> str:
+    return str(value).strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _binary_diagnosis(raw_label: str, class_index: int) -> str:
+    token = _normalize_label(raw_label)
+    if token in {"1", "abnormal", "pathological", "murmur", "extrasystole", "extrahls", "positive", "disease"}:
+        return "abnormal"
+    if token in {"0", "normal", "negative", "healthy"}:
+        return "normal"
+    return "abnormal" if int(class_index) == 1 else "normal"
+
+
+def _to_probability_map(values, labels: list[str]) -> dict[str, float]:
+    if isinstance(values, list) and values and isinstance(values[0], dict):
+        row = values[0]
+        return {str(key): float(value) for key, value in row.items()}
+    if isinstance(values, dict):
+        return {str(key): float(value) for key, value in values.items()}
+
+    arr = np.asarray(values).reshape(-1)
+    return {
+        (labels[i] if i < len(labels) else str(i)): float(value)
+        for i, value in enumerate(arr)
+    }
+
+
+def _abnormal_probability(prob_map: dict[str, float]) -> float | None:
+    if not prob_map:
+        return None
+    abnormal_total = 0.0
+    normal_total = 0.0
+    for key, value in prob_map.items():
+        diagnosis = _binary_diagnosis(str(key), 1 if _normalize_label(str(key)) in {"1", "abnormal", "pathological", "murmur", "extrasystole", "extrahls", "positive", "disease"} else 0)
+        if diagnosis == "abnormal":
+            abnormal_total += float(value)
+        else:
+            normal_total += float(value)
+    total = abnormal_total + normal_total
+    if total <= 0:
+        return None
+    return abnormal_total / total
 
 
 @lru_cache(maxsize=1)
@@ -83,28 +136,20 @@ def _inference_result(features: np.ndarray):
             labels = metadata.get("classes", [])
         except (OSError, json.JSONDecodeError):
             labels = []
-            metadata = {}
-    label = labels[prediction] if 0 <= prediction < len(labels) else str(prediction)
+    raw_label = labels[prediction] if 0 <= prediction < len(labels) else str(prediction)
+    diagnosis = _binary_diagnosis(raw_label, prediction)
     result = {
-        "label": label,
+        "label": diagnosis,
+        "diagnosis": diagnosis,
+        "model_label": raw_label,
         "class_index": prediction,
-        "model_version": metadata.get("model_version", "unknown"),
+        "is_abnormal": diagnosis == "abnormal",
     }
     if len(outputs) > 1:
         probabilities = outputs[1]
-        if isinstance(probabilities, list) and probabilities and isinstance(probabilities[0], dict):
-            probabilities = probabilities[0]
-            result["probabilities"] = {
-                labels[int(index)] if int(index) < len(labels) else str(index): float(value)
-                for index, value in probabilities.items()
-            }
-        else:
-            values = np.asarray(probabilities).reshape(-1)
-            result["probabilities"] = {
-                labels[i] if i < len(labels) else str(i): float(value)
-                for i, value in enumerate(values)
-            }
-    result["inference_ms"] = (time.perf_counter() - started) * 1000.0
+        prob_map = _to_probability_map(probabilities, labels)
+        result["probabilities"] = prob_map
+        result["probability_abnormal"] = _abnormal_probability(prob_map)
     return result
 
 
