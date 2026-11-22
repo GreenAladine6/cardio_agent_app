@@ -14,7 +14,7 @@ import numpy as np
 import onnxruntime as ort
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, confusion_matrix, f1_score, precision_score, recall_score
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.neural_network import MLPClassifier
 from sklearn.pipeline import make_pipeline
@@ -39,7 +39,14 @@ def candidate_models():
     }
 
 
-def run_benchmark(features, labels, *, model_path: str | Path, experiment_name: str = "pcg-benchmark"):
+def run_benchmark(
+    features,
+    labels,
+    *,
+    model_path: str | Path,
+    experiment_name: str = "pcg-benchmark",
+    recording_ids: list[str] | None = None,
+):
     """Fit/evaluate candidates, log every run to MLflow, and publish best ONNX.
 
     `features` must be the fixed-width output of AudioPreprocessor and `labels`
@@ -64,16 +71,25 @@ def run_benchmark(features, labels, *, model_path: str | Path, experiment_name: 
         matches = [value for value in classes if str(value).casefold() in positive_names]
     if len(matches) != 1:
         raise ValueError("Could not identify one pathological class; set PATHOLOGICAL_LABEL to a label in the dataset")
-    pathological_class = int(np.flatnonzero(classes == matches[0])[0])
+    groups = np.asarray(recording_ids if recording_ids is not None else [f"recording-{i}" for i in range(len(y))], dtype=str)
+    if len(groups) != len(y) or np.any(np.char.strip(groups) == ""):
+        raise ValueError("recording_ids must provide one non-empty ID per feature row")
+    for label in classes:
+        if len(np.unique(groups[y == label])) < 5:
+            raise ValueError(f"At least five distinct recording groups are required for class {label!r}")
     try:
-        x_train, x_holdout, y_train, y_holdout = train_test_split(
-            x, y, test_size=0.4, random_state=42, stratify=y
-        )
-        x_val, x_test, y_val, y_test = train_test_split(
-            x_holdout, y_holdout, test_size=0.5, random_state=42, stratify=y_holdout
-        )
+        folds = list(StratifiedGroupKFold(n_splits=5, shuffle=True, random_state=42).split(x, y, groups))
+        test_indices = folds[0][1]
+        val_indices = folds[1][1]
+        train_indices = np.concatenate([indices for _, indices in folds[2:]])
+        x_train, y_train = x[train_indices], y[train_indices]
+        x_val, y_val = x[val_indices], y[val_indices]
+        x_test, y_test = x[test_indices], y[test_indices]
+        for split_name, split_labels in (("train", y_train), ("validation", y_val), ("test", y_test)):
+            if set(split_labels.tolist()) != set(classes.tolist()):
+                raise ValueError(f"{split_name} split does not contain all classes; provide more balanced recording groups")
     except ValueError as exc:
-        raise ValueError(f"Could not create stratified holdout split: {exc}") from exc
+        raise ValueError(f"Could not create recording-aware stratified splits: {exc}") from exc
 
     encoder = LabelEncoder().fit(y_train)
     y_train_encoded = encoder.transform(y_train)
@@ -85,6 +101,12 @@ def run_benchmark(features, labels, *, model_path: str | Path, experiment_name: 
     results = []
     fitted_models = {}
     with _MLFLOW_LOCK:
+        destination = Path(model_path)
+        metadata_destination = destination.with_suffix(destination.suffix + ".json")
+        if (destination.exists() or metadata_destination.exists()) and os.getenv("ALLOW_MODEL_OVERWRITE", "0").strip().lower() not in {"1", "true", "yes"}:
+            raise FileExistsError(
+                f"Refusing to replace existing model artifact or metadata: {destination}; set ALLOW_MODEL_OVERWRITE=1 only after reviewing them"
+            )
         with mlflow.start_run(run_name="pcg-five-model-benchmark") as parent:
             mlflow.log_params({"samples": len(y), "features": x.shape[1], "classes": len(classes), "train_fraction": 0.6, "validation_fraction": 0.2, "test_fraction": 0.2, "seed": 42, "pathological_class": str(matches[0])})
             for name, model in candidate_models().items():
@@ -135,7 +157,6 @@ def run_benchmark(features, labels, *, model_path: str | Path, experiment_name: 
                 options={id(final_estimator): {"zipmap": False}},
                 target_opset=17,
             )
-            destination = Path(model_path)
             destination.parent.mkdir(parents=True, exist_ok=True)
             with tempfile.NamedTemporaryFile(dir=destination.parent, suffix=".onnx", delete=False) as temp:
                 temp_path = Path(temp.name)
@@ -153,7 +174,7 @@ def run_benchmark(features, labels, *, model_path: str | Path, experiment_name: 
                 temp_path.unlink(missing_ok=True)
                 raise
             os.replace(temp_path, destination)
-            metadata_path = destination.with_suffix(destination.suffix + ".json")
+            metadata_path = metadata_destination
             metadata_path.write_text(json.dumps({
                 "algorithm": winner["algorithm"], "classes": encoder.classes_.tolist(),
                 "feature_count": int(x.shape[1]), "model_version": parent.info.run_id,

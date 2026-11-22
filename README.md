@@ -1,6 +1,6 @@
 # CardioAgent-Ops
 
-CardioAgent-Ops is a microservice-based phonocardiogram (PCG) analysis platform for heart sound classification and inference. The project is organized into separate services for the API gateway and the audio-processing engine, with a Dockerized deployment pattern for local or cloud execution.
+CardioAgent-Ops is a Docker-based microservice platform for phonocardiogram (PCG) classification, retrieval, and cautious language-model assistance. The Compose stack includes the API gateway, CPU ONNX audio engine, LangGraph orchestrator, Ollama-backed LLM API, Qdrant vector store, and MLflow tracking server. Ollama runs as a separate model runtime for the LLM API.
 
 ## Overview
 
@@ -19,6 +19,11 @@ The repository contains:
 ### API gateway
 The API gateway is a small FastAPI service that accepts uploaded WAV files and exposes a web/test entrypoint.
 It forwards valid uploads to the audio engine inference endpoint and returns the engine response.
+
+The agent-orchestrator API is published on port 8003. It accepts an
+audio-engine prediction and a user question at `/v1/orchestrate`; see
+[`agent-orchestrator/README.md`](./agent-orchestrator/README.md) for its request
+shape and the required Qdrant collection setup.
 
 ### Audio engine
 The audio engine handles:
@@ -196,6 +201,11 @@ curl -X POST "http://localhost:8001/v1/infer" -F "file=@sample.wav"
 
 ```bash
 curl -X POST "http://localhost:8000/analyze_pcg" -F "file=@sample.wav"
+# Include a question to also run the three-agent workflow:
+curl -X POST "http://localhost:8000/analyze_pcg" \
+  -F "file=@sample.wav" -F "question=What should I ask my clinician?"
+# Stream progress and the final JSON result as server-sent events:
+curl -N -X POST "http://localhost:8000/analyze_pcg/stream" -F "file=@sample.wav"
 ```
 
 ## RAG and Guardrails docs

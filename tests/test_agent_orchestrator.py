@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import importlib.util
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,12 @@ from agents.reasoning_agent import ReasoningAgent, ReasoningAgentError
 from orchestrator import CardioAgentOrchestrator
 from schemas.audio_schema import AudioAgentResult
 from schemas.knowledge_schema import KnowledgeAgentResult, RetrievedPassage
+
+API_PATH = Path(__file__).resolve().parents[1] / "agent-orchestrator" / "app.py"
+API_SPEC = importlib.util.spec_from_file_location("orchestrator_http_api", API_PATH)
+orchestrator_http_api = importlib.util.module_from_spec(API_SPEC)
+assert API_SPEC.loader is not None
+API_SPEC.loader.exec_module(orchestrator_http_api)
 
 pytestmark = pytest.mark.unit
 
@@ -122,4 +129,29 @@ def test_reasoning_agent_fails_after_one_retry(monkeypatch):
                 ]
             ),
             user_question="Any concerns?",
+        )
+
+
+def test_orchestrator_http_api_validates_and_returns_structured_response(monkeypatch):
+    from pydantic import ValidationError
+
+    monkeypatch.setattr(
+        orchestrator_http_api.orchestrator,
+        "run",
+        lambda **_: {"status": "structured"},
+    )
+    payload = orchestrator_http_api.OrchestrationRequest.model_validate({
+        "audio_engine_result": {"label": "normal", "probability_abnormal": 0.1},
+        "user_question": "What does this result mean?",
+    })
+    endpoint = next(
+        route.endpoint for route in orchestrator_http_api.app.routes
+        if getattr(route, "path", None) == "/v1/orchestrate"
+    )
+    response = endpoint(payload)
+
+    assert response == {"status": "structured"}
+    with pytest.raises(ValidationError):
+        orchestrator_http_api.OrchestrationRequest.model_validate(
+            {"audio_engine_result": {}, "user_question": ""}
         )

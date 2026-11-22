@@ -12,6 +12,39 @@ services:
       - mlflow-artifacts:/mlflow/artifacts
     restart: unless-stopped
 
+  agent-orchestrator:
+    build:
+      context: .
+      dockerfile: agent-orchestrator/Dockerfile
+    image: cardio-agent-orchestrator:latest
+    container_name: cardio-agent-orchestrator
+    ports:
+      - "8003:8000"
+    environment:
+      LLM_SERVER_URL: http://llm-inference:8000/v1/chat
+      QDRANT_URL: http://vector-db:6333
+      QDRANT_COLLECTION_NAME: clinical_guidelines
+      LLM_TIMEOUT_SECONDS: "120"
+      HF_HOME: /cache/huggingface
+    volumes:
+      - embedding-cache:/cache/huggingface
+    depends_on:
+      llm-inference:
+        condition: service_started
+      qdrant:
+        condition: service_started
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health', timeout=5)"
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+    restart: unless-stopped
+
   api-gateway:
     build:
       context: ./api_getway
@@ -23,6 +56,12 @@ services:
     environment:
       AUDIO_ENGINE_URL: http://audio-engine:8000
       AUDIO_ENGINE_INFER_PATH: /v1/infer
+      ORCHESTRATOR_URL: http://agent-orchestrator:8000
+    depends_on:
+      agent-orchestrator:
+        condition: service_started
+      audio-engine:
+        condition: service_started
     restart: unless-stopped
 
   llm-inference:
@@ -31,6 +70,10 @@ services:
       dockerfile: llm_finetuning/Dockerfile
     image: cardio-llm-inference:latest
     container_name: cardio-llm-inference
+    networks:
+      default:
+        aliases:
+          - llm-inference-api
     ports:
       - "8002:8000"
     environment:
@@ -55,6 +98,10 @@ services:
   ollama:
     image: ollama/ollama:latest
     container_name: cardio-ollama
+    networks:
+      default:
+        aliases:
+          - llm-server
     ports:
       - "127.0.0.1:11434:11434"
     volumes:
@@ -87,6 +134,11 @@ services:
     restart: unless-stopped
 
   qdrant:
+    # The Compose service is named `qdrant`; clients should use Docker DNS.
+    networks:
+      default:
+        aliases:
+          - vector-db
     image: qdrant/qdrant:latest
     container_name: cardio-qdrant
     ports:
@@ -101,3 +153,8 @@ volumes:
   mlflow-artifacts:
   ollama-data:
   qdrant-data:
+  embedding-cache:
+
+networks:
+  default:
+    name: cardioagent-ops

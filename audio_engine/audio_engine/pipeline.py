@@ -39,6 +39,10 @@ class AudioPreprocessor:
         return self.config.n_mfcc * 2
 
     def from_bytes(self, data: bytes) -> np.ndarray:
+        signal, _ = self.waveform_from_bytes(data)
+        return self.from_signal(signal, self.config.sample_rate)
+
+    def waveform_from_bytes(self, data: bytes) -> tuple[np.ndarray, int]:
         if not data:
             raise ValueError("Audio upload is empty")
         try:
@@ -58,9 +62,33 @@ class AudioPreprocessor:
             if isinstance(exc, ValueError) and str(exc).startswith("Audio "):
                 raise
             raise ValueError("Audio is not a supported, readable WAV recording") from exc
-        return self.from_signal(signal, source_rate)
+        waveform = self._resample_and_normalize(signal, source_rate)
+        return waveform, self.config.sample_rate
 
     def from_signal(self, signal, source_rate: int) -> np.ndarray:
+        waveform = self.waveform_from_signal(signal, source_rate)
+        mfcc = librosa.feature.mfcc(
+            y=waveform,
+            sr=self.config.sample_rate,
+            n_mfcc=self.config.n_mfcc,
+            n_fft=self.config.n_fft,
+            hop_length=self.config.hop_length,
+        )
+        features = np.concatenate((mfcc.mean(axis=1), mfcc.std(axis=1))).astype(np.float32)
+        if not np.isfinite(features).all():
+            raise ValueError("MFCC extraction produced invalid values")
+        return features
+
+    def waveform_from_signal(self, signal, source_rate: int) -> np.ndarray:
+        waveform = self._resample_and_normalize(signal, source_rate)
+        target_length = int(self.config.sample_rate * self.config.target_seconds)
+        if waveform.size < target_length:
+            waveform = np.pad(waveform, (0, target_length - waveform.size))
+        else:
+            waveform = waveform[:target_length]
+        return np.asarray(waveform, dtype=np.float32)
+
+    def _resample_and_normalize(self, signal, source_rate: int) -> np.ndarray:
         if not isinstance(source_rate, (int, np.integer)) or source_rate <= 0:
             raise ValueError("Sample rate must be positive")
         signal = np.asarray(signal, dtype=np.float32)
@@ -86,20 +114,4 @@ class AudioPreprocessor:
         if peak > 1e-8:
             signal = signal / peak
 
-        target_length = int(self.config.sample_rate * self.config.target_seconds)
-        if signal.size < target_length:
-            signal = np.pad(signal, (0, target_length - signal.size))
-        else:
-            signal = signal[:target_length]
-
-        mfcc = librosa.feature.mfcc(
-            y=signal,
-            sr=self.config.sample_rate,
-            n_mfcc=self.config.n_mfcc,
-            n_fft=self.config.n_fft,
-            hop_length=self.config.hop_length,
-        )
-        features = np.concatenate((mfcc.mean(axis=1), mfcc.std(axis=1))).astype(np.float32)
-        if not np.isfinite(features).all():
-            raise ValueError("MFCC extraction produced invalid values")
-        return features
+        return np.asarray(signal, dtype=np.float32)

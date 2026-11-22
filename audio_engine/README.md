@@ -42,46 +42,74 @@ Compose variables:
 | `AUDIO_ENGINE_URL` | `http://audio-engine:8000` in Compose | Gateway's internal service URL |
 
 The service validates file contents with SoundFile, accepts WAV encoding,
-downmixes multichannel audio by channel mean, resamples to 2,000 Hz, peak
-normalizes non-silent recordings, then pads/crops to a fixed five-second input
-window. MFCC mean and standard deviation produce a 40-value float32 vector.
-The preprocessing is deterministic and shared by the online benchmark and
-inference service. Files shorter than 0.25 seconds, longer than 120 seconds,
+downmixes multichannel audio by channel mean, resamples to 2,000 Hz, and peak
+normalizes non-silent recordings. Inference segments longer recordings into
+five-second windows with 50% overlap and pads shorter windows; each window
+produces a 40-value float32 MFCC mean/std vector or a log-Mel tensor according
+to model metadata. Files shorter than 0.25 seconds, longer than 120 seconds,
 empty, malformed, or non-finite are rejected. Silences remain valid zero
 signals.
 
-The dataset configuration in `config.yaml` uses five-second windows at 50%
-overlap and includes the separate MFCC/ZCR/log-Mel data-preparation functions.
-`data_prep.make_grouped_split` assigns recordings by group when metadata is
-available; always use patient/source IDs as group keys where supplied.
+The dataset configuration uses five-second windows at 50% overlap.
+`prepare_dataset.py` assigns whole recordings or patient groups to
+train/validation/test before creating windows. An optional metadata CSV can
+provide `recording_id`, `patient_id`, `group_id`, and `source`; otherwise the
+recording filename stem is the group key. Folder names are not treated as
+evidence of dataset provenance.
 
 ## Dataset and training
 
-No PASCAL or PhysioNet records are present in this checkout. Supply legally
-obtained recordings and metadata yourself; do not commit raw recordings.
-`data_prep.harmonize_labels` maps common normal and abnormal label names, and
-the offline benchmark entrypoint currently reads precomputed NumPy arrays:
+No PCG recordings or professor TP notebooks are present in this checkout.
+Supply authorized recordings and metadata in Google Drive; do not commit raw
+recordings. In Colab, mount Drive and prepare the arrays with:
 
 ```sh
-cd audio_engine
-python -m audio_engine.train_benchmark \
-  --train-features data/train_features.npy --train-labels data/train_labels.npy \
-  --val-features data/val_features.npy --val-labels data/val_labels.npy \
-  --test-features data/test_features.npy --test-labels data/test_labels.npy
+%cd /content/CardioAgent-Ops
+!pip install -r audio_engine/requirements-colab.txt
+!python -m audio_engine.prepare_dataset \
+  --dataset-root /content/drive/MyDrive/ourdataset/train \
+  --metadata-csv /content/drive/MyDrive/ourdataset/metadata.csv \
+  --output-dir /content/pcg-export
 ```
 
-`models.py` contains the required Decision Tree and scaled RBF SVM for 1D
-features, a custom log-Mel CNN, ResNet18, and a CNN stem plus Transformer
-encoder. The neural models expect single-channel `(batch, 1, mel, frames)`
-inputs. ResNet18 uses no weights by default; `PCGResNet18(pretrained=True)` is
-an explicit training-time request that may download torchvision weights.
-`train_benchmark.py` takes separate MFCC/feature and log-Mel arrays. The latter
-must have `(samples, mel_bins, frames)` shape and align with the same labels.
-It selects by validation pathological recall, then F1, specificity, accuracy,
-and algorithm name; a minimum specificity of 0.5 is required. Only the winner
-is evaluated on the held-out test split. This five-model runner currently does
-not export the selected neural model to ONNX; the online classical benchmark
-does export and checks label parity before replacing its artifact.
+The metadata CSV is optional. If supplied, it must include `relative_path`
+matching a path beneath the dataset root; it can also contain patient/recording
+identifiers and a configurable source value. The prepared export contains MFCC
+and log-Mel arrays, labels, per-window manifests, a recording split manifest,
+and preprocessing/label configuration.
+
+Train in Colab with:
+
+```sh
+!python -m audio_engine.train_benchmark \
+  --train-features /content/pcg-export/train_features.npy --train-labels /content/pcg-export/train_labels.npy \
+  --val-features /content/pcg-export/val_features.npy --val-labels /content/pcg-export/val_labels.npy \
+  --test-features /content/pcg-export/test_features.npy --test-labels /content/pcg-export/test_labels.npy \
+  --train-mel /content/pcg-export/train_mel.npy --val-mel /content/pcg-export/val_mel.npy \
+  --test-mel /content/pcg-export/test_mel.npy --output-dir /content/pcg-model-exports \
+  --mlflow-uri file:/content/pcg-mlruns
+```
+
+`models.py` contains the Decision Tree, scaled RBF SVM, custom log-Mel CNN,
+ResNet18, and CNN/Transformer hybrid. Neural models use CUDA when available
+and CPU otherwise. Selection uses pathological validation recall first, then
+F1, specificity, accuracy, and algorithm name. The winner is evaluated on the
+held-out test set and written into a unique MLflow run directory. Classical
+bundles include joblib and ONNX with a parity report. Neural bundles include a
+PyTorch checkpoint and an ONNX export attempt; failures are recorded in the
+metadata while preserving the checkpoint. Metrics, confusion matrices,
+training/inference durations, parameter count, label mapping, and preprocessing
+settings accompany the artifact. No training metrics are supplied until a
+real dataset has been used.
+
+Zip the selected run directory and the `pcg-export` manifest for transfer from
+Colab. To install a winner locally, copy its `model.onnx` to
+`models/pcg_classifier.onnx` and copy its `metadata.json` to
+`models/pcg_classifier.onnx.json`. The serving endpoint reads `input_type` and
+the label list from that sidecar; MFCC models receive the 40-value fixed
+feature vector and neural models receive the configured log-Mel tensor. Keep
+`model.pt` for PyTorch recovery when ONNX export is unavailable. Then start the
+audio engine with `docker compose up --build audio-engine api-gateway`.
 
 The `/v1/benchmark` convenience endpoint accepts 8–256 base64 WAV samples and
 trains the lightweight models in `audio_engine/audio_engine/benchmark.py`.
@@ -112,7 +140,8 @@ curl -F 'file=@recording.wav' http://localhost:8000/analyze_pcg
 ```
 
 `POST /v1/infer` accepts multipart field `file` with WAV bytes and responds
-with `{"prediction":{"label":"...","class_index":0,"probabilities":{},"model_version":"...","inference_ms":...}}`.
+with a recording-level prediction, mean abnormal-class probability, segment
+count, per-segment probabilities, and model timing.
 Scores are emitted as model scores; they are not calibrated unless the model
 training pipeline has calibrated them. Missing or unreadable model artifacts
 produce HTTP 503. `/health` reports whether the configured model file exists.

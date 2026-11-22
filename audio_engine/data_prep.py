@@ -182,34 +182,64 @@ def make_grouped_split(
     if not np.isclose(train_fraction + val_fraction + test_fraction, 1.0):
         raise ValueError("Split fractions must sum to 1.0")
 
-    groups = []
-    split_map = {}
+    fractions = {"train": train_fraction, "val": val_fraction, "test": test_fraction}
+    active_splits = [name for name, fraction in fractions.items() if fraction > 0]
+    if df[target_col].isna().any() or df[group_col].isna().any():
+        raise ValueError("Target labels and group identifiers must be present for grouped splitting")
+    group_sizes = df.groupby(group_col, sort=False).size()
+    if len(group_sizes) < len(active_splits):
+        raise ValueError("There are fewer unique groups than requested non-empty splits")
+
+    labels = sorted(pd.unique(df[target_col]).tolist())
+    group_vectors = {
+        group_id: np.asarray(
+            [int((group[target_col] == label).sum()) for label in labels], dtype=np.float64
+        )
+        for group_id, group in df.groupby(group_col, sort=False)
+    }
     rng = np.random.default_rng(seed)
-    for label in sorted(pd.unique(df[target_col])):
-        group_ids = df.loc[df[target_col] == label, group_col].drop_duplicates().tolist()
-        rng.shuffle(group_ids)
-        n = len(group_ids)
-        train_n = max(1, int(round(n * train_fraction))) if n > 1 else 1
-        val_n = max(1, int(round(n * val_fraction))) if n > 1 else 0
-        test_n = max(1, int(round(n * test_fraction))) if n > 1 else 0
-        if train_n + val_n + test_n > n:
-            adjust = (train_n + val_n + test_n) - n
-            test_n = max(0, test_n - adjust)
-        if train_n + val_n + test_n < n and n > 1:
-            remaining = n - (train_n + val_n + test_n)
-            test_n += remaining
-        for position, gid in enumerate(group_ids):
-            if position < train_n:
-                split_map[gid] = "train"
-            elif position < train_n + val_n:
-                split_map[gid] = "val"
-            else:
-                split_map[gid] = "test"
-        groups.extend(group_ids)
+    group_ids = list(group_vectors)
+    rng.shuffle(group_ids)
+    random_order = {group_id: index for index, group_id in enumerate(group_ids)}
+    group_ids.sort(key=lambda group_id: (-int(group_sizes[group_id]), random_order[group_id]))
+    total_by_label = np.sum(list(group_vectors.values()), axis=0)
+    targets = {
+        name: total_by_label * fraction
+        for name, fraction in fractions.items()
+    }
+    assigned = {name: np.zeros(len(labels), dtype=np.float64) for name in fractions}
+    assigned_groups = {name: 0 for name in fractions}
+    split_map = {}
+
+    def balance_cost(counts: dict[str, np.ndarray], group_counts: dict[str, int]) -> float:
+        class_cost = 0.0
+        for name in active_splits:
+            scale = np.maximum(targets[name], 1.0)
+            class_cost += float(np.sum(((counts[name] - targets[name]) / scale) ** 2))
+        size_cost = sum(
+            ((group_counts[name] - len(group_ids) * fractions[name]) / max(len(group_ids) * fractions[name], 1.0)) ** 2
+            for name in active_splits
+        )
+        return class_cost + float(size_cost)
+
+    for group_position, group_id in enumerate(group_ids):
+        eligible_splits = active_splits
+        if group_position < len(active_splits):
+            # Seed every requested split with one whole recording/patient group.
+            eligible_splits = [active_splits[group_position]]
+        best_split = min(
+            eligible_splits,
+            key=lambda name: balance_cost(
+                assigned | {name: assigned[name] + group_vectors[group_id]},
+                assigned_groups | {name: assigned_groups[name] + 1},
+            ),
+        )
+        assigned[best_split] += group_vectors[group_id]
+        assigned_groups[best_split] += 1
+        split_map[group_id] = best_split
 
     result = df.copy()
     result["split"] = result[group_col].map(split_map)
-    missing = result["split"].isna()
-    if missing.any():
-        result.loc[missing, "split"] = "train"
+    if result["split"].isna().any():
+        raise RuntimeError("Grouped split did not assign every record")
     return result.reset_index(drop=True)

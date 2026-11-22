@@ -9,3 +9,12 @@ venv/
 api_getway/apigetwayenv/
 /models/adapters/
 /models/gguf/
+/models/*.onnx
+/models/*.onnx.json
+/models/*.pt
+/models/*.joblib
+/audio_engine/data/
+/audio_engine/exported_models/
+/exported_models/
+/pcg-export/
+/docs/technical_references

@@ -88,6 +88,27 @@ def test_group_split_no_leakage():
     split = make_grouped_split(df, target_col="binary_label", group_col="recording_id", test_size=0.25, seed=42)
     assert set(split["recording_id"]).issubset(df["recording_id"].unique())
     assert len(split) == len(df)
+    assert split.groupby("recording_id")["split"].nunique().max() == 1
+
+
+@pytest.mark.unit
+def test_group_split_keeps_mixed_label_patient_together():
+    df = pd.DataFrame({
+        "recording_id": ["a", "b", "c", "d", "e", "f"],
+        "patient_id": ["p1", "p1", "p2", "p2", "p3", "p3"],
+        "binary_label": [0, 1, 0, 1, 0, 1],
+    })
+
+    split = make_grouped_split(
+        df,
+        target_col="binary_label",
+        group_col="patient_id",
+        train_fraction=1 / 3,
+        val_fraction=1 / 3,
+        test_fraction=1 / 3,
+    )
+
+    assert split.groupby("patient_id")["split"].nunique().max() == 1
 
 
 @pytest.mark.unit
@@ -148,3 +169,59 @@ def test_health_endpoint():
     data = response.json()
     assert "status" in data
     assert "onnx_model_ready" in data
+
+
+@pytest.mark.unit
+def test_mel_model_inference_uses_waveform_and_metadata(tmp_path, monkeypatch):
+    from audio_engine.audio_engine import service
+
+    class Input:
+        name = "log_mel"
+        type = "tensor(float)"
+        shape = [None, 1, 64, None]
+
+    class Session:
+        def get_inputs(self):
+            return [Input()]
+
+        def run(self, _, feed):
+            assert feed["log_mel"].shape[:3] == (1, 1, 64)
+            return [np.asarray([[0.0, 2.0]], dtype=np.float32)]
+
+    model_path = tmp_path / "model.onnx"
+    model_path.with_suffix(".onnx.json").write_text(
+        json.dumps({"input_type": "log_mel", "classes": ["normal", "pathological"]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(service, "MODEL_PATH", model_path)
+    monkeypatch.setattr(service, "_load_model", lambda: Session())
+    time = np.arange(10_000, dtype=np.float32) / 2000
+    waveform = np.sin(2 * np.pi * 80 * time).astype(np.float32)
+
+    result = service._inference_result(np.zeros(40, dtype=np.float32), waveform)
+
+    assert result["label"] == "abnormal"
+    assert result["class_index"] == 1
+    assert result["probability_abnormal"] > 0.8
+
+
+@pytest.mark.unit
+def test_long_recordings_use_overlapping_segments_and_average_scores():
+    from audio_engine.audio_engine.service import _aggregate_segment_results, _make_windows
+
+    waveform = np.ones(16_000, dtype=np.float32)
+    windows = _make_windows(waveform)
+    assert len(windows) == 3
+    assert all(window.shape == (10_000,) for window in windows)
+
+    prediction = _aggregate_segment_results(
+        [
+            {"label": "normal", "probability_abnormal": 0.2, "probabilities": {"normal": 0.8, "pathological": 0.2}, "inference_ms": 1.0},
+            {"label": "abnormal", "probability_abnormal": 0.8, "probabilities": {"normal": 0.2, "pathological": 0.8}, "inference_ms": 2.0},
+        ],
+        duration_s=8.0,
+    )
+    assert prediction["label"] == "abnormal"
+    assert prediction["n_segments"] == 2
+    assert prediction["probability_abnormal"] == pytest.approx(0.5)
+    assert prediction["inference_ms"] == 3.0
